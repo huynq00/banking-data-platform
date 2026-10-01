@@ -1,0 +1,89 @@
+name: banking
+
+services:
+  # Core Banking database (OLTP) — the "source system" of the bank
+  postgres-oltp:
+    image: postgres:16
+    container_name: postgres-oltp
+    environment:
+      POSTGRES_USER: ${OLTP_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${OLTP_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${OLTP_POSTGRES_DB}
+    # Logical WAL is required later for CDC with Debezium (week 3)
+    command: ["postgres", "-c", "wal_level=logical"]
+    ports:
+      - "5433:5432" # host:container — 5432 on the host is taken by a local Postgres
+    volumes:
+      - oltp-data:/var/lib/postgresql/data
+      - ./infra/postgres-oltp/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OLTP_POSTGRES_USER} -d ${OLTP_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Data Warehouse (OLAP) — separate from OLTP so analytics never slows the bank down
+  postgres-dwh:
+    image: postgres:16
+    container_name: postgres-dwh
+    environment:
+      POSTGRES_USER: ${DWH_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${DWH_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DWH_POSTGRES_DB}
+    ports:
+      - "5434:5432"
+    volumes:
+      - dwh-data:/var/lib/postgresql/data
+      - ./infra/postgres-dwh/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DWH_POSTGRES_USER} -d ${DWH_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Data lake: S3-compatible object storage (RustFS, a MinIO alternative)
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    container_name: rustfs
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: ${LAKE_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${LAKE_SECRET_KEY}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console
+    volumes:
+      - lake-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot job: create the lakehouse bucket, then exit
+  lake-init:
+    image: amazon/aws-cli:2.37.5
+    container_name: lake-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: ${LAKE_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${LAKE_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    # Idempotent: only create the bucket if it does not exist yet
+    command:
+      - >
+        aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${LAKE_BUCKET} 2>/dev/null
+        && echo "Bucket ${LAKE_BUCKET} already exists"
+        || aws --endpoint-url http://rustfs:9000 s3 mb s3://${LAKE_BUCKET}
+    restart: "no"
+
+volumes:
+  oltp-data:
+  dwh-data:
+  lake-data:

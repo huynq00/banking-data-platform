@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Data (large files are not committed)
+data/raw/**
+!data/raw/**/.gitkeep
+
+# dbt
+dbt/banking/target/
+dbt/banking/dbt_packages/
+dbt/banking/logs/
+
+# Airflow
+airflow/logs/
+
+# Spark
+spark-warehouse/
+checkpoints/
+
+# OS / IDE
+.DS_Store
+.idea/
+
+# Local analysis outputs
+data/*.txt
